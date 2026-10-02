@@ -1,12 +1,12 @@
-"""Offline tests: no network, no API key. The agent loop runs against a fake Claude client."""
+"""Offline tests: no network, no API key. The agent loop runs against a fake LLM."""
 import json
-from types import SimpleNamespace as NS
 
 from kommun_agent.agent import KommunAgent
 from kommun_agent.config import KommunConfig
 from kommun_agent.ingest import build_index, chunk_text, extract_text, in_scope
 from kommun_agent.retrieval import Retriever
-from kommun_agent.tools import ToolRunner
+from kommun_agent.providers import ClaudeLLM, GeminiLLM, LLMResponse, ToolCall, get_llm
+from kommun_agent.tools import TOOLS, ToolRunner
 
 CFG = KommunConfig(name="Testkommun", base_url="https://www.test.se", seed_urls=["https://www.test.se/"])
 
@@ -57,31 +57,37 @@ def test_create_ticket_writes_jsonl(tmp_path):
     assert (tmp_path / "t.jsonl").read_text().count("\n") == 1
 
 
-class FakeClient:
-    """Replays scripted Claude responses: first a tool call, then a final answer."""
+class FakeLLM:
+    """Replays scripted model responses: e.g. first a tool call, then a final answer."""
+    name, model = "fake", "fake-1"
 
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
-        self.messages = self
 
-    def create(self, **kwargs):
-        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})  # snapshot
+    def chat(self, system, history, tools):
+        self.calls.append([dict(t) for t in history])  # snapshot
         return self.responses.pop(0)
 
+    def complete(self, prompt, max_tokens=300):
+        return '{"score": 5, "reason": "ok"}'
 
-def _resp(stop, *blocks):
-    return NS(stop_reason=stop, content=list(blocks), usage=NS(input_tokens=100, output_tokens=20))
+
+def _tool(name, **args):
+    return LLMResponse(text="", tool_calls=[ToolCall("t1", name, args)],
+                       input_tokens=100, output_tokens=20)
+
+
+def _final(text):
+    return LLMResponse(text=text, input_tokens=100, output_tokens=20)
 
 
 def test_agent_searches_then_answers_with_sources(tmp_path):
-    client = FakeClient([
-        _resp("tool_use", NS(type="tool_use", id="t1", name="search_kommun_info",
-                             input={"query": "förskola ansökan"})),
-        _resp("end_turn", NS(type="text", text="Ansök via e-tjänsten.\n\nSources: "
-                                                "[Ansök om förskola](https://www.test.se/forskola)")),
+    llm = FakeLLM([
+        _tool("search_kommun_info", query="förskola ansökan"),
+        _final("Ansök via e-tjänsten.\n\nSources: [Ansök om förskola](https://www.test.se/forskola)"),
     ])
-    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), client=client,
+    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), llm=llm,
                         trace_path=tmp_path / "traces.jsonl")
     result = agent.ask("Hur ansöker jag om förskola?")
 
@@ -89,15 +95,80 @@ def test_agent_searches_then_answers_with_sources(tmp_path):
     assert [c["name"] for c in result.tool_calls] == ["search_kommun_info"]
     assert "e-tjänsten" in result.contexts[0]
     assert result.steps == 2 and result.input_tokens == 200
-    # the tool result was sent back to the model
-    last_user_turn = client.calls[1]["messages"][-1]
-    assert last_user_turn["content"][0]["type"] == "tool_result"
+    # the tool result was sent back to the model on the second call
+    last = llm.calls[1][-1]
+    assert last["role"] == "tool" and "e-tjänsten" in last["results"][0]["output"]
     assert (tmp_path / "traces.jsonl").exists()
 
 
-def test_agent_stops_after_max_steps(tmp_path):
-    loop = [_resp("tool_use", NS(type="tool_use", id=f"t{i}", name="search_kommun_info",
-                                 input={"query": "x"})) for i in range(3)]
-    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), client=FakeClient(loop),
+def test_agent_records_ticket(tmp_path, monkeypatch):
+    llm = FakeLLM([_tool("create_service_request", category="other", summary="Check my case"),
+                   _final("I've created a request.")])
+    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), llm=llm, trace_path=None)
+    agent.tools.tickets_path = tmp_path / "t.jsonl"
+    assert agent.ask("Check my case").tickets[0].startswith("REQ-")
+
+
+def test_agent_stops_after_max_steps():
+    loop = [_tool("search_kommun_info", query="x") for _ in range(3)]
+    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), llm=FakeLLM(loop),
                         max_steps=3, trace_path=None)
     assert "couldn't complete" in agent.ask("?").answer
+
+
+# --- provider format adapters (offline: only the request translation is tested) ---
+
+HISTORY = [
+    {"role": "user", "text": "Hur söker jag förskola?"},
+    {"role": "assistant", "text": "", "tool_calls": [ToolCall("c1", "search_kommun_info", {"query": "förskola"})]},
+    {"role": "tool", "results": [{"id": "c1", "name": "search_kommun_info", "output": "[1] Förskola ..."}]},
+]
+
+
+def test_claude_history_format():
+    msgs = ClaudeLLM.to_messages(HISTORY)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert msgs[1]["content"][0] == {"type": "tool_use", "id": "c1", "name": "search_kommun_info",
+                                     "input": {"query": "förskola"}}
+    assert msgs[2]["content"][0]["type"] == "tool_result" and msgs[2]["content"][0]["tool_use_id"] == "c1"
+
+
+def test_gemini_history_and_tool_format():
+    contents = GeminiLLM.to_contents(HISTORY)
+    assert [c.role for c in contents] == ["user", "model", "user"]
+    assert contents[1].parts[0].function_call.name == "search_kommun_info"
+    assert contents[2].parts[0].function_response.response == {"result": "[1] Förskola ..."}
+    decl = GeminiLLM.to_tools(TOOLS)[0].function_declarations
+    assert [d.name for d in decl] == ["search_kommun_info", "create_service_request"]
+
+
+def test_get_llm_rejects_unknown_provider():
+    import pytest
+    with pytest.raises(ValueError):
+        get_llm("nope")
+
+
+def test_gemini_parses_function_call_and_usage():
+    from types import SimpleNamespace as NS
+    from google.genai import types
+    content = types.Content(role="model", parts=[
+        types.Part(function_call=types.FunctionCall(name="search_kommun_info", args={"query": "bygglov"}))])
+    fake_resp = types.GenerateContentResponse(
+        candidates=[types.Candidate(content=content)],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=50, candidates_token_count=10, thoughts_token_count=5))
+    client = NS(models=NS(generate_content=lambda **kw: fake_resp))
+    r = GeminiLLM(model="test", client=client).chat("sys", HISTORY[:1], TOOLS)
+    assert r.wants_tools and r.tool_calls[0].input == {"query": "bygglov"}
+    assert (r.input_tokens, r.output_tokens) == (50, 15)
+    assert r.raw is content  # replayed verbatim next turn (keeps thought signatures)
+
+
+def test_claude_parses_tool_use():
+    from types import SimpleNamespace as NS
+    blocks = [NS(type="text", text="Let me check."),
+              NS(type="tool_use", id="tu1", name="search_kommun_info", input={"query": "avfall"})]
+    resp = NS(content=blocks, usage=NS(input_tokens=40, output_tokens=8))
+    client = NS(messages=NS(create=lambda **kw: resp))
+    r = ClaudeLLM(model="test", client=client).chat("sys", HISTORY[:1], TOOLS)
+    assert r.text == "Let me check." and r.tool_calls[0].id == "tu1"

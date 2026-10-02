@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
 INDEX_PATH = DATA_DIR / "index.json"

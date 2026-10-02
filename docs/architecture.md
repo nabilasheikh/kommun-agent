@@ -3,7 +3,8 @@
 ```mermaid
 flowchart LR
     R[Resident] -->|question| UI[Chat page / API<br>FastAPI]
-    UI --> A[Agent loop<br>Claude + tools]
+    UI --> A[Agent loop<br>+ tools]
+    A <-->|providers.py| M{{Claude or Gemini}}
     A -->|search_kommun_info| S[(BM25 index<br>data/index.json)]
     A -->|create_service_request| T[(Tickets<br>data/tickets.jsonl)]
     A -->|answer + sources| UI
@@ -16,8 +17,8 @@ flowchart LR
 
 ## Request flow
 
-1. The resident's message and earlier turns go to Claude with two tools and a system prompt.
-2. Claude searches (often 1-3 times with different Swedish phrasings), reads passages, and either
+1. The resident's message and earlier turns go to the model (Claude or Gemini) with two tools and a system prompt.
+2. The model searches (often 1-3 times with different Swedish phrasings), reads passages, and either
    answers with source links or creates a service request.
 3. The loop stops when Claude returns a normal answer, or after `max_steps` (default 6) as a guard.
 4. Every turn is written to `logs/traces.jsonl`: tools used, tokens, latency, sources, tickets.
@@ -30,4 +31,5 @@ flowchart LR
 | Answers only from retrieved pages | A wrong fee or deadline from a municipality is worse than "I don't know" | Same, plus a groundedness check before replying |
 | Ticket tool writes to a file | Shows the agent taking a real action | Call the kommun's case-management or CRM API |
 | Never asks for personnummer | GDPR and data minimisation | PII redaction on input and in logs |
+| One provider interface (`providers.py`) | Swap models without touching the agent; compare them on the same evals | Add routing: a cheap model first, a stronger one on low confidence |
 | Evals in the repo | Prompt changes are tested like code | Run evals in CI on every prompt change |

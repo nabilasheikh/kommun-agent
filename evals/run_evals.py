@@ -3,6 +3,7 @@
     python evals/run_evals.py            # deterministic checks only
     python evals/run_evals.py --judge    # + LLM-as-judge groundedness score (1-5)
     python evals/run_evals.py --only emergency,off_topic
+    LLM_PROVIDER=gemini python evals/run_evals.py   # compare providers
 
 Writes evals/results/latest.md (readable table) and latest.json (full detail).
 """
@@ -70,13 +71,9 @@ def check(case: dict, result, domain: str) -> list[str]:
 def judge(agent: KommunAgent, result) -> dict:
     if not result.contexts:
         return {"score": None, "reason": "no retrieval"}
-    msg = agent.client.messages.create(
-        model=agent.model, max_tokens=200,
-        messages=[{"role": "user", "content": JUDGE_PROMPT.format(
-            question=result.question, contexts="\n\n".join(result.contexts)[:20000],
-            answer=result.answer)}],
-    )
-    text = "".join(b.text for b in msg.content if b.type == "text")
+    text = agent.llm.complete(JUDGE_PROMPT.format(
+        question=result.question, contexts="\n\n".join(result.contexts)[:20000],
+        answer=result.answer))
     match = re.search(r"\{.*\}", text, re.S)
     try:
         return json.loads(match.group(0)) if match else {"score": None, "reason": text[:200]}
@@ -115,11 +112,13 @@ def main() -> None:
     passed = sum(r["passed"] for r in rows)
     out = ROOT / "results"
     out.mkdir(exist_ok=True)
+    (out / f"latest-{agent.llm.name}.json").write_text(
+        json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
     (out / "latest.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
     scores = [r["judge"]["score"] for r in rows if r.get("judge", {}).get("score")]
     lines = [f"# Eval results: {cfg.name}", "",
-             f"{datetime.now():%Y-%m-%d %H:%M} · model `{agent.model}` · "
+             f"{datetime.now():%Y-%m-%d %H:%M} · `{agent.model}` · "
              f"**{passed}/{len(rows)} passed**"
              + (f" · groundedness {sum(scores) / len(scores):.1f}/5" if scores else ""), "",
              "| Case | Result | Tools | Tokens | Latency | Notes |",

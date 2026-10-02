@@ -1,4 +1,4 @@
-"""The agent loop: Claude decides when to search, when to hand off, and when to answer."""
+"""The agent loop: the model decides when to search, when to hand off, and when to answer."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import MODEL, TRACES_PATH, KommunConfig
+from .config import TRACES_PATH, KommunConfig
+from .providers import LLM, get_llm
 from .retrieval import Retriever
 from .tools import TOOLS, ToolRunner
 
@@ -49,6 +50,7 @@ class AgentResult:
     output_tokens: int = 0
     latency_s: float = 0.0
     model: str = ""
+    provider: str = ""
 
     @property
     def tickets(self) -> list[str]:
@@ -63,49 +65,51 @@ class AgentResult:
 
 
 class KommunAgent:
-    def __init__(self, cfg: KommunConfig, retriever: Retriever, client=None,
-                 model: str = MODEL, max_steps: int = 6, trace_path: Path | None = TRACES_PATH):
-        if client is None:
-            import anthropic
-            client = anthropic.Anthropic()
+    def __init__(self, cfg: KommunConfig, retriever: Retriever, llm: LLM | None = None,
+                 max_steps: int = 6, trace_path: Path | None = TRACES_PATH):
         self.cfg = cfg
-        self.client = client
-        self.model = model
+        self.llm = llm or get_llm()
         self.max_steps = max_steps
         self.trace_path = trace_path
         self.tools = ToolRunner(retriever)
         self.system = SYSTEM_PROMPT.format(name=cfg.name, contact=cfg.escalation_contact)
 
+    @property
+    def model(self) -> str:
+        return f"{self.llm.name}:{self.llm.model}"
+
     def ask(self, question: str, history: list[dict] | None = None) -> AgentResult:
         """Answer one resident message. `history` is prior turns as [{"role", "content": str}]."""
-        messages: list[dict] = [*(history or []), {"role": "user", "content": question}]
-        result = AgentResult(question=question, answer="", sources=[], model=self.model)
+        turns: list[dict] = [
+            {"role": "user", "text": h["content"]} if h["role"] == "user"
+            else {"role": "assistant", "text": h["content"], "tool_calls": []}
+            for h in (history or [])
+        ]
+        turns.append({"role": "user", "text": question})
+        result = AgentResult(question=question, answer="", sources=[],
+                             model=self.llm.model, provider=self.llm.name)
         start = time.perf_counter()
 
         for step in range(1, self.max_steps + 1):
-            resp = self.client.messages.create(
-                model=self.model, max_tokens=1024, system=self.system,
-                tools=TOOLS, messages=messages,
-            )
+            resp = self.llm.chat(self.system, turns, TOOLS)
             result.steps = step
-            result.input_tokens += resp.usage.input_tokens
-            result.output_tokens += resp.usage.output_tokens
-            messages.append({"role": "assistant", "content": resp.content})
+            result.input_tokens += resp.input_tokens
+            result.output_tokens += resp.output_tokens
+            turns.append({"role": "assistant", "text": resp.text,
+                          "tool_calls": resp.tool_calls, "raw": resp.raw})
 
-            if resp.stop_reason != "tool_use":
-                result.answer = "".join(b.text for b in resp.content if b.type == "text").strip()
+            if not resp.wants_tools:
+                result.answer = resp.text
                 break
 
-            tool_results = []
-            for block in resp.content:
-                if block.type != "tool_use":
-                    continue
-                output = self.tools.run(block.name, block.input)
-                result.tool_calls.append({"name": block.name, "input": block.input, "output": output})
-                if block.name == "search_kommun_info":
+            outputs = []
+            for call in resp.tool_calls:
+                output = self.tools.run(call.name, call.input)
+                result.tool_calls.append({"name": call.name, "input": call.input, "output": output})
+                if call.name == "search_kommun_info":
                     result.contexts.append(output)
-                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
-            messages.append({"role": "user", "content": tool_results})
+                outputs.append({"id": call.id, "name": call.name, "output": output})
+            turns.append({"role": "tool", "results": outputs})
         else:
             result.answer = (f"Sorry, I couldn't complete that. Please contact "
                              f"{self.cfg.escalation_contact}.")

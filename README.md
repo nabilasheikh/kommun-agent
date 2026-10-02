@@ -3,7 +3,8 @@
 An AI agent that answers residents' questions about Swedish municipal services, using only
 the municipality's own web pages, and hands cases to a human when it should.
 
-Point it at any kommun's website with one config file.
+Point it at any kommun's website with one config file, and run it on **Claude or Gemini**
+(one setting in `.env`).
 
 > **Demo:** _add a GIF or 60-second video here_
 > **Eval results:** _add your latest score here, e.g. "11/12 cases pass, groundedness 4.6/5"_
@@ -25,7 +26,8 @@ Point it at any kommun's website with one config file.
 ```mermaid
 flowchart LR
     R[Resident] --> UI[Chat page / API]
-    UI --> A[Agent loop: Claude + tools]
+    UI --> A[Agent loop + tools]
+    A <--> M{{Claude or Gemini}}
     A -->|search_kommun_info| S[(BM25 index)]
     A -->|create_service_request| T[(Tickets)]
     A --> L[(Traces)]
@@ -37,12 +39,13 @@ More detail and the design trade-offs: [docs/architecture.md](docs/architecture.
 
 ## Quick start
 
-Requires Python 3.10+ and an [Anthropic API key](https://console.anthropic.com/).
+Requires Python 3.10+ and an API key for either
+[Gemini](https://aistudio.google.com/apikey) (has a free tier) or [Claude](https://console.anthropic.com/).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env          # add your ANTHROPIC_API_KEY
+cp .env.example .env          # set LLM_PROVIDER and add that provider's key
 
 # 1. Choose a municipality: edit config/kommun.yaml (Södertälje by default)
 # 2. Crawl its public pages and build the index (~150 pages, a few minutes)
@@ -74,6 +77,18 @@ the kommun's domain, did it escalate when it should (and only then), did it ment
 emergency, did it refuse to reveal its prompt, did it avoid repeating a personnummer.
 Results go to `evals/results/latest.md`.
 
+**Compare providers** on the same cases:
+
+```bash
+LLM_PROVIDER=gemini python evals/run_evals.py --judge
+LLM_PROVIDER=claude python evals/run_evals.py --judge
+```
+
+| Provider · model | Passed | Groundedness | Avg tokens | Avg latency |
+| --- | --- | --- | --- | --- |
+| _gemini · ..._ | _x/12_ | _x/5_ | _..._ | _...s_ |
+| _claude · ..._ | _x/12_ | _x/5_ | _..._ | _...s_ |
+
 **Prompt-failure log** (fill this in as you iterate; interviewers ask about it):
 
 | Version | What failed | Why | Change | Result |
@@ -87,11 +102,12 @@ src/kommun_agent/
   ingest.py      polite crawler (robots.txt, one domain, rate-limited) + chunking
   retrieval.py   BM25 search over chunks
   tools.py       tool schemas + execution (search, create service request)
-  agent.py       Claude tool-use loop, system prompt, tracing
+  providers.py   Claude and Gemini adapters behind one interface
+  agent.py       provider-neutral tool-use loop, system prompt, tracing
   api.py         FastAPI: /api/chat, /api/info, /health, web page
   cli.py         ingest | ask | chat | serve
 evals/           eval cases + runner
-tests/           offline unit tests (fake Claude client, no API key needed)
+tests/           offline unit tests (fake LLM, no API key needed)
 ```
 
 ## Privacy
