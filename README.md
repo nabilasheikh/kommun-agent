@@ -93,7 +93,10 @@ LLM_PROVIDER=claude python evals/run_evals.py --judge
 
 | Version | What failed | Why | Change | Result |
 | --- | --- | --- | --- | --- |
-| v1 | _e.g. "förskoleplats" found nothing_ | _BM25 doesn't split compound words_ | _told the model to retry with split words_ | _x/12 → y/12_ |
+| v1 | Crawler indexed almost nothing on some sites | `urllib`'s robots.txt reader sends its own User-Agent; the site returned 403 and the parser treated that as "disallow everything" | Fetch robots.txt with our own client and User-Agent, parse it ourselves | Pages crawled again |
+| v1 | Index had the wrong pages: 150-page cap filled breadth-first with politics, notice board and archive pages; only 8 "bo och bygga" pages, no application pages | No scoping of the crawl | Seed URLs + `allowed_path_prefixes` for the 8 service sections, cap raised to 400 | _re-run evals and fill in_ |
+| v1 → v2 | "Hur ansöker jag om förskoleplats?" → Gemini searched 6 times, then "Sorry, I couldn't complete that" (33k tokens, 8 s) | Nothing forced the model to stop searching, and weak results made it keep rephrasing | Max 3 searches in the system prompt; on the last step tools are switched off (`tool_choice: none` / Gemini `mode: NONE`) so the model must answer with what it has | Always returns an answer or an honest "not found" |
+| v1 → v2 | Search ranked the meals page above förskola pages for "förskoleplats"; "forskola" typed without å/ä/ö matched nothing | BM25 can't see inside Swedish compound words; no diacritic folding; one page filled all 5 results | Fold å/ä/ö; expand unknown compound words to known stems (`forskoleplats` → `forskola…`, `plats`); title + URL words weighted; max 2 results per page | Förskola pages went from outside the top 5 to positions 1–2 (same index) |
 
 ## Project layout
 
@@ -118,7 +121,7 @@ version would add PII redaction on input and in logs, data retention rules, and 
 
 ## Next steps
 
-- [ ] Hybrid retrieval: embeddings (pgvector) + BM25, with Swedish compound-word splitting
+- [ ] Hybrid retrieval: embeddings (pgvector) + BM25 (would replace the hand-made compound-word expansion)
 - [ ] Observability dashboard over `logs/traces.jsonl`: resolution rate, escalations, cost, unanswered questions
 - [ ] Load open data (SCB, Skolverket) into Postgres and expose it as a typed tool
 - [ ] Deploy to AWS (App Runner or ECS) with the evals running in CI
