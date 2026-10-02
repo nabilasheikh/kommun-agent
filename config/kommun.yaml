@@ -1,0 +1,10 @@
+# Point the agent at any Swedish municipality by editing this file
+# (or copy it and set KOMMUN_CONFIG=config/<your-file>.yaml).
+name: "Södertälje kommun"
+base_url: "https://www.sodertalje.se"
+seed_urls:
+  - "https://www.sodertalje.se/"
+# Only crawl these sections (empty = whole site). Narrow it to keep the demo fast.
+allowed_path_prefixes: []
+max_pages: 150
+escalation_contact: "kommunens kontaktcenter"

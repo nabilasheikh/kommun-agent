@@ -1,0 +1,7 @@
+name: "Stockholms stad"
+base_url: "https://start.stockholm"
+seed_urls:
+  - "https://start.stockholm/"
+allowed_path_prefixes: []
+max_pages: 150
+escalation_contact: "Kontakt Stockholm"
