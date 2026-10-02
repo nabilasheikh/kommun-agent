@@ -40,7 +40,8 @@ class LLM(Protocol):
     name: str
     model: str
 
-    def chat(self, system: str, history: list[dict], tools: list[dict]) -> LLMResponse: ...
+    def chat(self, system: str, history: list[dict], tools: list[dict],
+             force_answer: bool = False) -> LLMResponse: ...  # force_answer: text reply only, no tools
 
     def complete(self, prompt: str, max_tokens: int = 300) -> str: ...
 
@@ -79,10 +80,12 @@ class ClaudeLLM:
                     for r in turn["results"]]})
         return messages
 
-    def chat(self, system: str, history: list[dict], tools: list[dict]) -> LLMResponse:
+    def chat(self, system: str, history: list[dict], tools: list[dict],
+             force_answer: bool = False) -> LLMResponse:
+        extra = {"tool_choice": {"type": "none"}} if force_answer else {}
         resp = self.client.messages.create(
             model=self.model, max_tokens=1024, system=system,
-            tools=tools, messages=self.to_messages(history))
+            tools=tools, messages=self.to_messages(history), **extra)
         return LLMResponse(
             text="".join(b.text for b in resp.content if b.type == "text").strip(),
             tool_calls=[ToolCall(b.id, b.name, dict(b.input))
@@ -140,11 +143,17 @@ class GeminiLLM:
                                       parameters_json_schema=t["input_schema"])
             for t in tools])]
 
-    def _config(self, system: str | None, tools: list[dict] | None, max_tokens: int):
+    def _config(self, system: str | None, tools: list[dict] | None, max_tokens: int,
+                force_answer: bool = False):
         from google.genai import types
+        tool_config = None
+        if tools and force_answer:
+            tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode="NONE"))
         return types.GenerateContentConfig(
             system_instruction=system,
             tools=self.to_tools(tools) if tools else None,
+            tool_config=tool_config,
             max_output_tokens=max_tokens,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
@@ -157,11 +166,12 @@ class GeminiLLM:
         return (u.prompt_token_count or 0,
                 (u.candidates_token_count or 0) + (u.thoughts_token_count or 0))
 
-    def chat(self, system: str, history: list[dict], tools: list[dict]) -> LLMResponse:
+    def chat(self, system: str, history: list[dict], tools: list[dict],
+             force_answer: bool = False) -> LLMResponse:
         # Thinking models spend output tokens on reasoning, so allow more room than Claude needs.
         resp = self.client.models.generate_content(
             model=self.model, contents=self.to_contents(history),
-            config=self._config(system, tools, max_tokens=4096))
+            config=self._config(system, tools, max_tokens=4096, force_answer=force_answer))
         content = resp.candidates[0].content if resp.candidates else None
         parts = (content.parts or []) if content else []
         calls = [ToolCall(p.function_call.id or f"call_{i}", p.function_call.name,

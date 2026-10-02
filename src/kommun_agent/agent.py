@@ -19,7 +19,8 @@ you reach through the search_kommun_info tool.
 
 How to work:
 1. Always search before answering a factual question. Search in Swedish. If the first results \
-are weak, try one or two other phrasings (synonyms, split compound words).
+are weak, try one or two other phrasings (synonyms, split compound words). Use at most 3 \
+searches per question, then answer with what you found.
 2. Base every statement on the search results. Never guess fees, dates, opening hours, rules \
 or eligibility. If the pages don't answer the question, say so plainly and offer to create a \
 service request.
@@ -91,15 +92,19 @@ class KommunAgent:
         start = time.perf_counter()
 
         for step in range(1, self.max_steps + 1):
-            resp = self.llm.chat(self.system, turns, TOOLS)
+            # Last step: no more tools, the model must answer with what it has gathered.
+            final = step == self.max_steps
+            resp = self.llm.chat(self.system, turns, TOOLS, force_answer=final)
             result.steps = step
             result.input_tokens += resp.input_tokens
             result.output_tokens += resp.output_tokens
             turns.append({"role": "assistant", "text": resp.text,
                           "tool_calls": resp.tool_calls, "raw": resp.raw})
 
-            if not resp.wants_tools:
-                result.answer = resp.text
+            if not resp.wants_tools or final:
+                result.answer = resp.text or (
+                    f"I couldn't find this on the municipality's pages. "
+                    f"Please contact {self.cfg.escalation_contact}.")
                 break
 
             outputs = []

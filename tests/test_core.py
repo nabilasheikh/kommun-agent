@@ -65,8 +65,9 @@ class FakeLLM:
         self.responses = list(responses)
         self.calls = []
 
-    def chat(self, system, history, tools):
+    def chat(self, system, history, tools, force_answer=False):
         self.calls.append([dict(t) for t in history])  # snapshot
+        self.forced = force_answer
         return self.responses.pop(0)
 
     def complete(self, prompt, max_tokens=300):
@@ -109,11 +110,22 @@ def test_agent_records_ticket(tmp_path, monkeypatch):
     assert agent.ask("Check my case").tickets[0].startswith("REQ-")
 
 
-def test_agent_stops_after_max_steps():
-    loop = [_tool("search_kommun_info", query="x") for _ in range(3)]
-    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), llm=FakeLLM(loop),
-                        max_steps=3, trace_path=None)
-    assert "couldn't complete" in agent.ask("?").answer
+def test_agent_forces_an_answer_on_last_step():
+    llm = FakeLLM([_tool("search_kommun_info", query="x"), _tool("search_kommun_info", query="y"),
+                   _final("Based on what I found: apply via the e-service.")])
+    agent = KommunAgent(CFG, Retriever(build_index(PAGES)), llm=llm, max_steps=3, trace_path=None)
+    result = agent.ask("?")
+    assert llm.forced is True
+    assert result.answer.startswith("Based on what I found")
+
+
+def test_retriever_folds_swedish_letters_and_limits_per_page():
+    pages = PAGES + [{"url": "https://www.test.se/forskola/ansok", "title": "Ansök om plats",
+                      "text": " ".join(["förskola"] * 400)}]
+    r = Retriever(build_index(pages))
+    hits = r.search("ansoka forskola", k=5)
+    assert hits and all("forskola" in h["url"] for h in hits[:2])
+    assert max(sum(h["url"] == u for h in hits) for u in {h["url"] for h in hits}) <= 2
 
 
 # --- provider format adapters (offline: only the request translation is tested) ---
@@ -172,3 +184,11 @@ def test_claude_parses_tool_use():
     client = NS(messages=NS(create=lambda **kw: resp))
     r = ClaudeLLM(model="test", client=client).chat("sys", HISTORY[:1], TOOLS)
     assert r.text == "Let me check." and r.tool_calls[0].id == "tu1"
+
+
+def test_compound_word_expansion():
+    pages = PAGES + [{"url": "https://www.test.se/plats", "title": "Lediga platser",
+                      "text": "Det finns plats i flera grupper och verksamheter just nu i kommunen."}]
+    r = Retriever(build_index(pages))
+    assert "forskola" in r.expand(["forskoleplats"])
+    assert r.search("förskoleplats")[0]["url"].endswith("/forskola")
