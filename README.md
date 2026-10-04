@@ -37,6 +37,8 @@ flowchart LR
 
 More detail and the design trade-offs: [docs/architecture.md](docs/architecture.md).
 
+New to RAG? [LEARN_RAG.md](LEARN_RAG.md) has 8 hands-on lessons that run on this project's own index.
+
 ## Quick start
 
 Requires Python 3.10+ and an API key for either
