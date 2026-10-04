@@ -1,0 +1,31 @@
+# Labelled questions for measuring retrieval (lesson 7).
+# `expect`: a piece of the URL of a page that answers the question. A hit = any retrieved
+# chunk's URL contains it. Lesson 7 warns if no page in your index matches, so after each
+# re-crawl, check the warnings and fix the substrings to real URLs from your index.
+#
+# Write questions the way residents do: short, informal, misspelled, in English too.
+
+- q: "Hur ansöker jag om förskoleplats?"
+  expect: "/forskola"
+- q: "plats på dagis"
+  expect: "/forskola"
+- q: "How do I apply for preschool?"
+  expect: "/forskola"
+- q: "Behöver jag bygglov för en altan?"
+  expect: "bygg"
+- q: "vilka tider har biblioteket öppet"
+  expect: "/biblioteken"
+- q: "min mamma behöver hjälp hemma"
+  expect: "omsorg"
+- q: "försörjningsstöd ansökan"
+  expect: "forsorjning"
+- q: "school transport for my child"
+  expect: "/skolskjuts"
+- q: "modersmålsundervisning"
+  expect: "/modersmal"
+- q: "skolmat allergi"
+  expect: "/maltider"
+- q: "hur väljer jag skola till mitt barn"
+  expect: "skolval"
+- q: "kontakta kommunen"
+  expect: "/kontaktcenter"
