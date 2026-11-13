@@ -85,6 +85,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--judge", action="store_true")
     ap.add_argument("--only", help="comma-separated case ids")
+    ap.add_argument("--min-pass", type=int, help="exit non-zero if fewer cases pass")
     args = ap.parse_args()
 
     cfg = load_config()
@@ -131,6 +132,8 @@ def main() -> None:
                      f"| {r['tokens']} | {r['latency_s']}s | {note.strip()} |")
     (out / "latest.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n{passed}/{len(rows)} passed -> {out / 'latest.md'}")
+    if args.min_pass is not None and passed < args.min_pass:
+        sys.exit(f"FAIL: {passed} passed, need at least {args.min_pass}")
 
 
 if __name__ == "__main__":
